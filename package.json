@@ -1,0 +1,51 @@
+{
+  "name": "vs-worktree",
+  "displayName": "VS Worktree",
+  "description": "Create, reset and remove Git worktrees across multiple repositories from VS Code.",
+  "version": "0.1.4",
+  "icon": "media/icon.png",
+  "publisher": "local-tools",
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.95.0" },
+  "categories": ["Other"],
+  "main": "./src/extension.js",
+  "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false, "description": "Runs Git and repository dependency installation commands." },
+    "virtualWorkspaces": { "supported": false }
+  },
+  "contributes": {
+    "commands": [
+      { "command": "vsWorktree.reset", "title": "WT: Reset", "enablement": "isWorkspaceTrusted" },
+      { "command": "vsWorktree.new", "title": "WT: New", "enablement": "isWorkspaceTrusted" },
+      { "command": "vsWorktree.done", "title": "WT: Done", "enablement": "isWorkspaceTrusted" },
+      { "command": "vsWorktree.showOutput", "title": "WT: Show Output", "icon": "$(output)" }
+    ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "vsWorktree", "title": "VS Worktree", "icon": "media/worktree.svg" }]
+    },
+    "views": {
+      "vsWorktree": [{ "id": "vsWorktree.controls", "name": "Worktrees" }]
+    },
+    "menus": {
+      "view/title": [{ "command": "vsWorktree.showOutput", "when": "view == vsWorktree.controls", "group": "navigation" }]
+    },
+    "configuration": {
+      "title": "VS Worktree",
+      "properties": {
+        "vsWorktree.projectRoot": {
+          "type": "string", "default": "", "scope": "window",
+          "description": "Project folder containing .vscode/project-worktree.json. Set automatically in generated workspaces."
+        }
+      }
+    },
+    "jsonValidation": [{ "fileMatch": "/.vscode/project-worktree.json", "url": "./project.schema.json" }]
+  },
+  "scripts": {
+    "check": "node --check src/config.js && node --check src/worktrees.js && node --check src/extension.js",
+    "test": "node --test",
+    "package": "vsce package --allow-missing-repository --skip-license"
+  },
+  "dependencies": { "jsonc-parser": "^3.3.1" },
+  "devDependencies": { "@vscode/vsce": "^3.6.2" }
+}

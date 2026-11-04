@@ -1,0 +1,9 @@
+.vscode/**
+.agents/**
+docs/**
+test/**
+*.vsix
+worktrees/**
+.gitignore
+.vscodeignore
+package-lock.json

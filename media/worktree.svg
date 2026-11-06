@@ -1,6 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#C5C5C5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-  <circle cx="6" cy="5" r="2.5"/>
-  <circle cx="6" cy="19" r="2.5"/>
-  <circle cx="18" cy="5" r="2.5"/>
-  <path d="M6 7.5v9M18 7.5v1a5 5 0 0 1-5 5H6"/>
+  <!-- A gap at the crossing keeps the intertwined branches distinct at 24px. -->
+  <path d="M6 6C6 7.6 7.92 8.56 10.224 9.392M13.776 10.608C16.08 11.44 18 12.4 18 14V18"/>
+  <path d="M18 6C18 10 6 10 6 14V18"/>
+  <circle cx="6" cy="4" r="2"/>
+  <circle cx="18" cy="4" r="2"/>
+  <circle cx="6" cy="20" r="2"/>
+  <circle cx="18" cy="20" r="2"/>
 </svg>

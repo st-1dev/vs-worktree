@@ -1,8 +1,8 @@
 {
   "name": "vs-worktree",
   "displayName": "VS Worktree",
-  "description": "Create, reset and remove Git worktrees across multiple repositories from VS Code.",
-  "version": "0.1.6",
+  "description": "Create, update, reset and remove Git worktrees across multiple repositories from VS Code.",
+  "version": "0.1.8",
   "icon": "media/icon.png",
   "publisher": "local-tools",
   "license": "UNLICENSED",
@@ -27,6 +27,11 @@
   },
   "contributes": {
     "commands": [
+      {
+        "command": "vsWorktree.update",
+        "title": "WT: Update",
+        "enablement": "isWorkspaceTrusted"
+      },
       {
         "command": "vsWorktree.reset",
         "title": "WT: Reset",
@@ -93,6 +98,7 @@
     ]
   },
   "scripts": {
+    "check": "node --check src/config.js && node --check src/worktrees.js && node --check src/extension.js",
     "package": "vsce package --allow-missing-repository --skip-license"
   },
   "dependencies": {

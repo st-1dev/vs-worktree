@@ -41,36 +41,71 @@ async function selectProject() {
 
 function assertSaved(directories) {
   const dirty = vscode.workspace.textDocuments.find(doc => doc.isDirty && directories.some(dir => within(dir, doc.uri.fsPath)));
-  if (dirty) throw new Error(`Save or close the unsaved editor before removing its worktree: ${dirty.uri.fsPath}`);
+  if (dirty) throw new Error(`Save or close the unsaved editor before changing its worktree: ${dirty.uri.fsPath}`);
 }
 
 function createSidebar(context) {
   const changed = new vscode.EventEmitter();
   let busy = false;
+  let activeAction;
+  let status = 'Ready';
+  let message = 'Create feature workspaces with New. Refresh their base with Update. First use: Maintenance → Reset repositories.';
   const actions = [
     ['new', 'New worktrees', 'add', 'Create feature worktrees across all project repositories.'],
-    ['reset', 'Reset repositories', 'sync', 'Reclone repositories and recreate main worktrees (confirmation required).'],
+    ['update', 'Update repositories', 'repo-fetch', 'Fetch origin and fast-forward original/main across all project repositories.'],
     ['done', 'Remove feature worktrees', 'trash', 'Remove feature worktrees and keep Git branches (confirmation required).'],
     ['showOutput', 'Show Output', 'output', 'Open the VS Worktree command log.']
   ];
+  const reset = ['reset', 'Reset repositories', 'warning', 'Reclone all repositories and replace original/main, including ignored files. Confirmation and safety checks required.'];
+  const maintenance = new vscode.TreeItem('Maintenance', vscode.TreeItemCollapsibleState.Collapsed);
+  maintenance.id = 'maintenance';
+  maintenance.tooltip = 'Initial setup or full reclone. Use Update for routine remote changes.';
+  function actionItem([action, label, icon, tooltip]) {
+    const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+    const disabled = action !== 'showOutput' && (busy || !vscode.workspace.isTrusted);
+    item.id = action;
+    item.iconPath = activeAction === action && busy ? new vscode.ThemeIcon('loading~spin')
+      : new vscode.ThemeIcon(icon, disabled ? new vscode.ThemeColor('disabledForeground') : undefined);
+    item.description = disabled ? (busy ? (activeAction === action ? 'running…' : 'busy') : 'trust required')
+      : action === 'reset' ? 'reclone' : undefined;
+    item.tooltip = disabled ? `${tooltip}\n${busy ? 'Wait for the current operation to finish.' : 'Trust this workspace to run WT commands.'}` : tooltip;
+    item.accessibilityInformation = { label: `${label}${disabled ? `, unavailable, ${item.description}` : ''}. ${tooltip}` };
+    if (!disabled) item.command = { command: `vsWorktree.${action}`, title: label };
+    return item;
+  }
+  function statusItem() {
+    const item = new vscode.TreeItem(status, vscode.TreeItemCollapsibleState.None);
+    item.id = 'status';
+    item.iconPath = new vscode.ThemeIcon(busy ? 'loading~spin' : status.endsWith('Failed') ? 'error'
+      : status.includes('warning') ? 'warning' : status.includes('Completed') ? 'pass' : 'info');
+    item.tooltip = message;
+    item.accessibilityInformation = { label: message };
+    item.command = { command: 'vsWorktree.showOutput', title: 'Show Output' };
+    return item;
+  }
   const provider = {
     onDidChangeTreeData: changed.event,
-    getChildren: element => element ? [] : actions.map(([action, label, icon, tooltip]) => {
-      const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
-      item.iconPath = new vscode.ThemeIcon(icon);
-      item.tooltip = tooltip;
-      if (!busy || action === 'showOutput') item.command = { command: `vsWorktree.${action}`, title: label };
-      return item;
-    }),
+    getChildren: element => element ? (element.id === 'maintenance' ? [actionItem(reset)] : [])
+      : [...(status === 'Ready' ? [] : [statusItem()]), ...actions.slice(0, 3).map(actionItem), maintenance, actionItem(actions[3])],
     getTreeItem: item => item
   };
   const view = vscode.window.createTreeView('vsWorktree.controls', { treeDataProvider: provider });
-  view.description = 'Ready';
+  view.description = status;
+  view.message = vscode.workspace.isTrusted ? message : 'Trust this workspace to run WT commands. Show Output remains available.';
   context.subscriptions.push(changed, view);
+  context.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => { view.message = message; changed.fire(); }));
   return {
-    update(running, status) {
+    get status() { return status; },
+    get message() { return message; },
+    update(running, nextStatus, nextMessage = message, action) {
       busy = running;
+      activeAction = action;
+      status = nextStatus;
+      message = nextMessage;
       view.description = status;
+      // Native TreeView messages collapse newlines and clip long paths. Keep the
+      // context brief; the status row exposes the full result via tooltip/Output.
+      view.message = status === 'Ready' ? message : message.split('\n')[0].replace(/([/\\_.-])/g, '$1\u200b');
       changed.fire();
     }
   };
@@ -83,17 +118,21 @@ function activate(context) {
   context.subscriptions.push(vscode.commands.registerCommand('vsWorktree.showOutput', () => output.show(true)));
   let busy = false;
 
-  for (const action of ['reset', 'new', 'done']) {
+  for (const action of ['reset', 'new', 'done', 'update']) {
     context.subscriptions.push(vscode.commands.registerCommand(`vsWorktree.${action}`, async () => {
       if (!vscode.workspace.isTrusted) { await vscode.window.showErrorMessage('WT commands require a trusted workspace.'); return; }
       if (busy) { await vscode.window.showWarningMessage('A WT operation is already running in this window.'); return; }
       busy = true;
-      let status = 'Ready';
+      let status = sidebar.status;
+      let message = sidebar.message;
+      let summary = '';
       let completion, failure;
-      sidebar.update(true, `WT ${action}: waiting for selection…`);
+      sidebar.update(true, `WT ${action}: waiting for selection…`, 'Select a project and review the operation. Other actions will be available when this finishes.', action);
       try {
         const project = await selectProject();
         if (!project) return;
+        summary = `${project.project} · ${project.repositories.length} ${project.repositories.length === 1 ? 'repository' : 'repositories'}`;
+        sidebar.update(true, `WT ${action}: waiting for selection…`, `${summary}\nWaiting for ${action === 'new' ? 'a feature branch' : action === 'done' ? 'a feature selection' : action === 'reset' ? 'confirmation' : 'saved-editor checks'}…`, action);
         const service = new Worktrees(project, text => output.append(text));
         let branch;
         if (action === 'new') {
@@ -103,7 +142,11 @@ function activate(context) {
         }
         if (action === 'done') {
           const branches = await service.features();
-          if (!branches.length) { await vscode.window.showInformationMessage('No feature worktrees found.'); return; }
+          if (!branches.length) {
+            status = 'No feature worktrees';
+            message = `${summary}\nNo feature worktrees found. Use New worktrees to create a feature workspace.`;
+            await vscode.window.showInformationMessage('No feature worktrees found.'); return;
+          }
           branch = await vscode.window.showQuickPick(branches, { title: `WT: Done — ${project.project}`, placeHolder: 'Select feature worktrees to remove' });
           if (!branch) return;
           assertSaved([await service.featureBase(branch)]);
@@ -113,28 +156,35 @@ function activate(context) {
           assertSaved(project.repositories.flatMap(repo => [repo.original, repo.main]));
           if (await vscode.window.showWarningMessage(`Reclone ${project.project}: ${project.repositories.length} repositories in ${project.original}, ${project.bare} and ${project.main}? Existing original/main directories, including ignored files, will be replaced.`, { modal: true }, 'Reset repositories') !== 'Reset repositories') return;
         }
+        if (action === 'update') assertSaved(project.repositories.flatMap(repo => [repo.original, repo.main]));
         output.show(true);
         output.appendLine(`\nWT ${action}: ${project.project}${branch ? ` [${branch}]` : ''}`);
-        sidebar.update(true, `WT ${action}: running…`);
+        sidebar.update(true, `WT ${action}: running…`, `${summary}${branch ? `\n${branch}` : ''}\n${action === 'update' ? 'Fetching and updating original/main…' : action === 'new' ? 'Creating feature worktrees…' : action === 'done' ? 'Removing feature worktrees; keeping branches…' : 'Checking and recloning repositories…'}\nSee Show Output for live details.`, action);
         const workspace = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `WT: ${action} — ${project.project}`, cancellable: false }, () =>
-          withProjectLock(project, () => action === 'reset' ? service.reset() : action === 'new' ? service.newFeature(branch) : service.done(branch)));
+          withProjectLock(project, () => action === 'new' ? service.newFeature(branch) : action === 'done' ? service.done(branch) : service[action]()));
         const result = service.warnings.length ? `Completed with ${service.warnings.length} warning(s)` : 'Completed';
         output.appendLine(`\nWT ${action}: ${result} — ${project.project}${branch ? ` [${branch}]` : ''}.`);
         if (workspace) output.appendLine(`Workspace: ${workspace}`);
         if (action === 'done') output.appendLine('Feature worktrees removed; Git branches kept.');
+        if (action === 'update') output.appendLine('Original repositories, bare remote refs and main worktrees updated; feature branches kept.');
         status = `WT ${action}: ${result}`;
-        completion = { workspace, project: project.project, branch, warnings: service.warnings.length };
+        message = `${summary}${branch ? `\n${branch}` : ''}\n${status}${service.warnings.length ? '\nSee Show Output for dependency warnings.' : ''}`;
+        completion = { workspace, project: project.project, branch, action, warnings: service.warnings.length };
       } catch (error) {
         failure = error;
         status = `WT ${action}: Failed`;
+        message = `${summary ? `${summary}\n` : ''}${status}\n${error.message}\nSee Show Output for details.`;
         output.appendLine(`ERROR: ${error.message}`);
         output.show(true);
       } finally {
         busy = false;
-        sidebar.update(false, status);
+        sidebar.update(false, status, message);
       }
       // Notifications must not keep the controls locked after the work has finished.
-      if (failure) { await vscode.window.showErrorMessage(`WT: ${failure.message}`); return; }
+      if (failure) {
+        if (await vscode.window.showErrorMessage(`WT: ${failure.message}`, 'Show Output') === 'Show Output') output.show(true);
+        return;
+      }
       if (completion.warnings) void vscode.window.showWarningMessage(`WT: ${completion.warnings} dependency preparation warning(s). See VS Worktree Output.`);
       if (completion.workspace) {
         if (await vscode.window.showInformationMessage(`WT: ${completion.project} workspace is ready.`, 'Open workspace') === 'Open workspace') {
@@ -146,6 +196,8 @@ function activate(context) {
             await vscode.window.showErrorMessage(`WT: Could not open workspace: ${error.message}`);
           }
         }
+      } else if (completion.action === 'update') {
+        await vscode.window.showInformationMessage(`WT: ${completion.project} original, bare and main updated.`);
       } else await vscode.window.showInformationMessage(`WT: ${completion.branch} worktrees removed; Git branches kept.`);
     }));
   }

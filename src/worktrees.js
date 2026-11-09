@@ -194,8 +194,11 @@ class Worktrees {
     }
   }
 
-  /** Prepare dependencies, preserving the scripts' nonfatal failures. */
+  /** Restore deploy and prepare dependencies, preserving the scripts' nonfatal failures. */
   async prepare(target) {
+    // deploy is optional; avoid a warning for repositories that do not track it.
+    const deploy = await this.git(target, 'ls-files', '--', 'deploy');
+    if (deploy) await this.git(target, 'checkout', '--', 'deploy');
     const before = await this.status(target);
     for (const [manifest, command, args] of [['go.mod', 'go', ['mod', 'vendor']], ['package.json', 'npm', ['install']]]) {
       if (!await exists(path.join(target, manifest))) continue;
@@ -245,6 +248,73 @@ class Worktrees {
     }
     await this.workspace(this.project.original, 'main');
     return this.workspace(this.project.main, 'main');
+  }
+
+  async updateState(target, expectedBranch) {
+    const branch = await this.git(target, 'branch', '--show-current');
+    if (!branch || (expectedBranch && branch !== expectedBranch)) {
+      throw new Error(`Unexpected branch or detached HEAD in ${target}. Expected ${expectedBranch || 'a local branch'}.`);
+    }
+    await this.clean(target);
+    for (const marker of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'rebase-merge', 'rebase-apply', 'sequencer', 'BISECT_START']) {
+      const file = await this.git(target, 'rev-parse', '--git-path', marker);
+      if (await exists(path.resolve(target, file))) throw new Error(`Finish the Git operation in ${target} before running WT: Update.`);
+    }
+    return { branch, head: await this.git(target, 'rev-parse', 'HEAD') };
+  }
+
+  /** UC5: fetch remote refs, then validate every update before moving any local branch. */
+  async preflightUpdate() {
+    const plans = [];
+    for (const repo of this.project.repositories) {
+      await this.checkBranch(repo.branch);
+      for (const target of [repo.original, repo.bare, repo.main]) {
+        await safePath(this.project.root, target);
+        if (!await exists(target)) throw new Error(`${repo.name} is not initialized (${target}). Run WT: Reset first.`);
+        await this.assertRepository(target, repo.url, target === repo.bare);
+      }
+      const tree = (await this.registered(repo)).find(item => path.resolve(item.path) === repo.main);
+      const common = await this.git(repo.main, 'rev-parse', '--git-common-dir');
+      if (!tree || tree.branch !== repo.branch || tree.locked || await fs.realpath(path.resolve(repo.main, common)) !== await fs.realpath(repo.bare)) {
+        throw new Error(`Main directory is not the expected unlocked registered worktree: ${repo.main}`);
+      }
+      for (const target of [repo.original, repo.main]) {
+        plans.push({ repo, target, ...await this.updateState(target, target === repo.main ? repo.branch : undefined) });
+      }
+    }
+    for (const repo of this.project.repositories) {
+      for (const target of [repo.original, repo.bare]) {
+        this.log(`Fetch ${repo.name}: ${target}\n`);
+        // Bare clones have no default fetch refspec. Never fetch into local feature/main heads.
+        await this.git(target, 'fetch', '--prune', '--no-tags', 'origin', '+refs/heads/*:refs/remotes/origin/*');
+      }
+    }
+    for (const plan of plans) {
+      const source = plan.target === plan.repo.main ? plan.repo.bare : plan.repo.original;
+      const ref = `refs/remotes/origin/${plan.branch}`;
+      const refs = await this.git(source, 'for-each-ref', '--format=%(refname)', ref);
+      if (!refs.split('\n').includes(ref)) throw new Error(`Remote branch ${plan.branch} is missing for ${plan.target}.`);
+      plan.remote = await this.git(source, 'rev-parse', '--verify', `${ref}^{commit}`);
+      const [localOnly, remoteOnly] = (await this.git(plan.target, 'rev-list', '--left-right', '--count', `${plan.head}...${plan.remote}`)).split(/\s+/).map(Number);
+      if (localOnly && remoteOnly) throw new Error(`Local and remote history diverged in ${plan.target} (${plan.branch}). Resolve it before running WT: Update.`);
+      if (localOnly) this.log(`Keeping ${localOnly} local commit(s) ahead of origin/${plan.branch} in ${plan.target}\n`);
+    }
+    return plans;
+  }
+
+  /** UC5: fast-forward original/main; shared bare main refs move with the main worktree. */
+  async update() {
+    const plans = await this.preflightUpdate();
+    for (const plan of plans) {
+      const state = await this.updateState(plan.target, plan.branch);
+      if (state.head !== plan.head) throw new Error(`HEAD changed during Update in ${plan.target}. Run WT: Update again.`);
+      this.log(`Update ${plan.repo.name}: ${plan.target} [${plan.branch}]\n`);
+      await this.git(plan.target, 'merge', '--ff-only', '--no-autostash', '--no-overwrite-ignore', plan.remote);
+      this.log(`Updated ${plan.target}: ${await this.git(plan.target, 'rev-parse', 'HEAD')}\n`);
+    }
+    // Prepare only after every code update; generated files must not affect later preflights.
+    for (const plan of plans) await this.prepare(plan.target);
+    this.log('Original repositories, bare remote refs and main worktrees updated; feature branches kept.\n');
   }
 
   /** UC3: preflight all destinations, then create or reuse the feature branch. */
